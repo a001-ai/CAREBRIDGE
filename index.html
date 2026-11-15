@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CareBridge: Closing the Screening-to-Care Loop</title>
+<style>
+  :root { --bg:#f4f7fb; --card:#fff; --ink:#1d2733; --muted:#5b6b7c; --line:#dde5ee;
+          --brand:#1f6f8b; --ok:#2e7d4f; --warn:#b26a00; --bad:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { background:var(--brand); color:#fff; padding:14px 20px; display:flex;
+           justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+  header h1 { font-size:18px; margin:0; }
+  header small { opacity:.85; }
+  main { max-width:1000px; margin:0 auto; padding:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:16px; margin-bottom:16px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 4px; }
+  input, select, textarea { width:100%; padding:8px; border:1px solid var(--line);
+          border-radius:6px; font:inherit; background:#fff; }
+  textarea { min-height:56px; resize:vertical; }
+  button { background:var(--brand); color:#fff; border:0; border-radius:6px; padding:8px 14px;
+           font:inherit; cursor:pointer; margin:4px 4px 4px 0; }
+  button.secondary { background:#eef3f8; color:var(--ink); border:1px solid var(--line); }
+  button.danger { background:var(--bad); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); }
+  .stat { background:#f8fbfd; border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .stat b { display:block; font-size:22px; }
+  .stat span { font-size:12px; color:var(--muted); }
+  .badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:12px;
+           border:1px solid var(--line); margin-right:4px; }
+  .urgent { color:var(--bad); border-color:var(--bad); font-weight:600; }
+  .overdue { background:#fdecea; color:var(--bad); border-color:#f5c2be; }
+  .done { color:var(--ok); border-color:var(--ok); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tr.row { cursor:pointer; }
+  tr.row:hover { background:#f5f9fc; }
+  .steps { list-style:none; padding:0; margin:0; }
+  .steps li { padding:8px 0; border-bottom:1px solid var(--line); display:flex; gap:10px; }
+  .dot { width:22px; height:22px; border-radius:50%; background:#dfe7ef; color:var(--muted);
+         font-size:12px; display:flex; align-items:center; justify-content:center; flex:0 0 22px; }
+  .dot.on { background:var(--ok); color:#fff; }
+  .log { font-size:12px; color:var(--muted); }
+  .empty { color:var(--muted); text-align:center; padding:24px; }
+  .notice { font-size:12px; color:var(--muted); margin-top:12px; }
+  .row2 { display:grid; gap:10px; grid-template-columns:1fr 1fr; }
+  @media (max-width:600px) { .row2 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>CareBridge</h1><small>Closing the screening-to-care loop · prototype with synthetic data</small></div>
+  <div id="who"></div>
+</header>
+<main id="app"></main>
+
+<script>
+// ---------- In-memory state only (lost on refresh, by design) ----------
+const state = { user: null, referrals: [], selectedId: null };
+const STEPS = [
+  "Result issued and referral created",
+  "Patient notified and acknowledged next step",
+  "Barrier reported and care team rescheduled (optional)",
+  "Receiving clinic accepted referral",
+  "Attendance confirmed",
+  "Closed with staff note"
+];
+const DAY = 86400000;
+const now = () => Date.now();
+const fmt = t => t ? new Date(t).toLocaleString() : "—";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const uid = () => "R" + Math.random().toString(36).slice(2, 8).toUpperCase();
+
+function log(ref, text) { ref.history.push({ t: now(), text }); }
+function isOverdue(r) { return r.status !== "Closed" && now() > r.targetDate; }
+function stepDone(r, i) { return r.steps[i] !== null; }
+
+// Sort: urgent first, then overdue, then oldest issued first
+function sortedReferrals() {
+  return [...state.referrals].sort((a, b) =>
+    (b.urgent - a.urgent) || (isOverdue(b) - isOverdue(a)) || (a.issuedAt - b.issuedAt));
+}
+
+// ---------- Sign-in (demo only, not secure) ----------
+function renderSignin() {
+  document.getElementById("who").innerHTML = "";
+  document.getElementById("app").innerHTML = `
+    <div class="card" style="max-width:420px;margin:30px auto">
+      <h2>Demo sign-in</h2>
+      <label>Role</label>
+      <select id="role"><option value="care">Care team</option><option value="patient">Patient</option></select>
+      <label>Name</label>
+      <input id="name" placeholder="Any name">
+      <label>4-digit PIN</label>
+      <input id="pin" inputmode="numeric" maxlength="4" placeholder="0000">
+      <div style="margin-top:12px"><button id="go">Sign in</button></div>
+      <p class="notice">Demo only. This sign-in is not secure and exists to show the role-based design.</p>
+    </div>`;
+  document.getElementById("go").onclick = () => {
+    const role = document.getElementById("role").value;
+    const name = document.getElementById("name").value.trim();
+    const pin = document.getElementById("pin").value.trim();
+    if (!name) return alert("Enter a name.");
+    if (!/^\d{4}$/.test(pin)) return alert("PIN must be 4 digits.");
+    state.user = { role, name };
+    state.selectedId = null;
+    render();
+  };
+}
+
+// ---------- Shell ----------
+function render() {
+  if (!state.user) return renderSignin();
+  document.getElementById("who").innerHTML =
+    `<span>${esc(state.user.name)} (${state.user.role === "care" ? "Care team" : "Patient"})</span>
+     <button class="secondary" onclick="signOut()">Sign out</button>`;
+  state.user.role === "care" ? renderCare() : renderPatient();
+}
+function signOut() { state.user = null; render(); }
+
+// ---------- Care team view ----------
+function renderCare() {
+  const list = sortedReferrals();
+  const open = list.filter(r => r.status !== "Closed");
+  const closed = list.filter(r => r.status === "Closed");
+  const acks = list.filter(r => r.ackAt).map(r => r.ackAt - r.issuedAt);
+  const closes = closed.map(r => r.closedAt - r.issuedAt);
+  const avg = a => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length / 60000) + " min" : "—";
+
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <h2>Measures (prototype, synthetic data)</h2>
+      <div class="grid">
+        <div class="stat"><b>${open.length}</b><span>Unresolved cases</span></div>
+        <div class="stat"><b>${list.filter(r => r.urgent && r.status !== "Closed").length}</b><span>Urgent unresolved</span></div>
+        <div class="stat"><b>${list.filter(isOverdue).length}</b><span>Overdue (flagged)</span></div>
+        <div class="stat"><b>${avg(acks)}</b><span>Avg issued to acknowledgement</span></div>
+        <div class="stat"><b>${avg(closes)}</b><span>Avg issued to closure</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>New referral</h2>
+      <div class="row2">
+        <div><label>Patient (synthetic name)</label><input id="f_patient"></div>
+        <div><label>Screening date</label><input id="f_screen" type="date"></div>
+        <div><label>Result as entered</label><input id="f_result"></div>
+        <div><label>Plan (clinician-approved text)</label><input id="f_plan"></div>
+        <div><label>Receiving clinic</label><input id="f_clinic"></div>
+        <div><label>Owner (staff name)</label><input id="f_owner" value="${esc(state.user.name)}"></div>
+        <div><label>Target date</label><input id="f_target" type="date"></div>
+        <div><label><input id="f_urgent" type="checkbox" style="width:auto"> Urgent</label></div>
+      </div>
+      <div style="margin-top:10px"><button id="f_add">Create referral</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Referrals</h2>
+      ${list.length ? `
+      <table>
+        <thead><tr><th>ID</th><th>Patient</th><th>Status</th><th>Owner</th><th>Flags</th><th>Target</th></tr></thead>
+        <tbody>
+        ${list.map(r => `
+          <tr class="row" onclick="openRef('${r.id}')">
+            <td>${r.id}</td><td>${esc(r.patient)}</td><td>${esc(r.status)}</td><td>${esc(r.owner)}</td>
+            <td>${r.urgent ? '<span class="badge urgent">Urgent</span>' : ""}${isOverdue(r) ? '<span class="badge overdue">Overdue</span>' : ""}</td>
+            <td>${new Date(r.targetDate).toLocaleDateString()}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>` : `<div class="empty">No data available. Create a referral to begin.</div>`}
+    </div>
+    <div id="detail"></div>`;
+
+  document.getElementById("f_add").onclick = addReferral;
+  if (state.selectedId) renderDetail(state.selectedId);
+}
+
+function addReferral() {
+  const v = id => document.getElementById(id).value.trim();
+  const patient = v("f_patient"), result = v("f_result"), clinic = v("f_clinic"),
+        owner = v("f_owner"), target = v("f_target"), screen = v("f_screen");
+  if (!patient || !result || !clinic || !owner || !target) return alert("Patient, result, clinic, owner and target date are required.");
+  const r = {
+    id: uid(), patient, screenDate: screen, result, plan: v("f_plan"), clinic, owner,
+    targetDate: new Date(target + "T23:59:59").getTime(), urgent: document.getElementById("f_urgent").checked,
+    issuedAt: now(), ackAt: null, closedAt: null, status: "Issued",
+    steps: [now(), null, null, null, null, null], attendance: false, note: "", history: []
+  };
+  log(r, "Referral created; owner " + owner);
+  state.referrals.push(r);
+  render();
+}
+
+function openRef(id) { state.selectedId = id; render(); document.getElementById("detail").scrollIntoView({behavior:"smooth"}); }
+
+function renderDetail(id) {
+  const r = state.referrals.find(x => x.id === id);
+  if (!r) return;
+  const care = state.user.role === "care";
+  const next = r.steps.findIndex(s => s === null);
+  const stepsHtml = STEPS.map((label, i) => `
+    <li><span class="dot ${r.steps[i] !== null ? "on" : ""}">${i + 1}</span>
+      <div><div>${label}</div>
+      <div class="log">${r.steps[i] !== null ? "Done " + fmt(r.steps[i]) : (i === 2 ? (r.status === "Closed" ? "Not needed" : "Optional, none reported") : "Pending")}</div></div></li>`).join("");
+
+  document.getElementById("detail").innerHTML = `
+    <div class="card">
+      <h2>${esc(r.patient)} · ${r.id}
+        ${r.urgent ? '<span class="badge urgent">Urgent</span>' : ""}
+        ${isOverdue(r) ? '<span class="badge overdue">Overdue</span>' : ""}
+        <span class="badge">${esc(r.status)}</span></h2>
+      <p class="log">Screening ${esc(r.screenDate || "—")} · Result: ${esc(r.result)} · Clinic: ${esc(r.clinic)} · Owner: ${esc(r.owner)} · Target ${new Date(r.targetDate).toLocaleDateString()}</p>
+      ${r.plan ? `<p>${esc(r.plan)}</p>` : ""}
+      <ol class="steps" style="list-style:none;padding:0">${stepsHtml}</ol>
+      <div style="margin-top:12px">
+        ${care ? careActions(r, next) : patientActions(r, next)}
+      </div>
+      <h2 style="margin-top:16px">History</h2>
+      <div class="log">${r.history.map(h => `${fmt(h.t)}: ${esc(h.text)}`).join("<br>") || "No entries"}</div>
+    </div>`;
+  bindActions(r);
+}
+
+function careActions(r, next) {
+  const closeReady = r.steps[4] !== null;
+  return `
+    ${next === 2 || r.steps[2] === null ? "" : ""}
+    <button id="a_clinic" ${r.steps[3] !== null || r.steps[1] === null ? "disabled" : ""}>Record clinic acceptance</button>
+    <button id="a_attend" class="secondary" ${r.steps[3] === null || r.steps[4] !== null ? "disabled" : ""}>Confirm attendance</button>
+    <div class="row2" style="margin-top:10px">
+      <div><label>Staff note (required to close)</label><textarea id="a_note">${esc(r.note)}</textarea></div>
+      <div style="align-self:end"><button id="a_close" class="danger" ${closeReady && r.steps[5] === null ? "" : "disabled"}>Close referral</button></div>
+    </div>
+    <div style="margin-top:10px">
+      <label>Reschedule after barrier report</label>
+      <input id="a_resched" type="date">
+      <button id="a_reschedule" class="secondary" ${r.steps[2] === null || r.steps[3] !== null ? "" : ""} ${r.barrierOpen ? "" : "disabled"}>Reschedule and clear barrier</button>
+    </div>`;
+}
+
+function patientActions(r, next) {
+  return `
+    <button id="p_ack" ${r.steps[1] !== null ? "disabled" : ""}>I've read my next step</button>
+    <div style="margin-top:10px">
+      <label>Something is getting in the way? Describe it</label>
+      <textarea id="p_barrier" ${r.barrierOpen ? "disabled" : ""}></textarea>
+      <button id="p_report" class="secondary" ${r.barrierOpen ? "disabled" : ""}>Report barrier</button>
+    </div>
+    <p class="notice">Patient view: you can acknowledge your next step and report a barrier. Only care staff can change the referral status.</p>`;
+}
+
+function bindActions(r) {
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  const rerender = () => { render(); openRefKeep(r.id); };
+
+  on("a_clinic", () => {
+    r.steps[3] = now(); r.status = "Accepted by clinic"; log(r, "Receiving clinic accepted referral"); rerender();
+  });
+  on("a_attend", () => {
+    r.steps[4] = now(); r.attendance = true; r.status = "Attendance confirmed"; log(r, "Attendance confirmed"); rerender();
+  });
+  on("a_close", () => {
+    const note = document.getElementById("a_note").value.trim();
+    if (!r.attendance) return alert("Attendance must be confirmed before closing.");
+    if (!note) return alert("A staff note is required to close.");
+    r.note = note; r.steps[5] = now(); r.closedAt = now(); r.status = "Closed";
+    log(r, "Closed with staff note: " + note); rerender();
+  });
+  on("a_reschedule", () => {
+    const d = document.getElementById("a_resched").value;
+    if (!d) return alert("Choose a new date.");
+    r.targetDate = new Date(d + "T23:59:59").getTime(); r.barrierOpen = false;
+    log(r, "Rescheduled to " + d + " by care team"); rerender();
+  });
+  on("p_ack", () => {
+    r.steps[1] = now(); r.ackAt = now(); r.status = "Patient acknowledged";
+    log(r, "Patient acknowledged next step"); rerender();
+  });
+  on("p_report", () => {
+    const txt = document.getElementById("p_barrier").value.trim();
+    if (!txt) return alert("Describe the barrier first.");
+    r.steps[2] = now(); r.barrierOpen = true; r.status = "Barrier reported";
+    log(r, "Barrier reported by patient: " + txt); rerender();
+  });
+}
+
+function openRefKeep(id) { state.selectedId = id; renderDetail(id); }
+
+// ---------- Patient view ----------
+function renderPatient() {
+  const mine = state.referrals;
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <h2>Your referrals</h2>
+      ${mine.length ? `
+      <table>
+        <thead><tr><th>ID</th><th>Result</th><th>Clinic</th><th>Status</th></tr></thead>
+        <tbody>${mine.map(r => `
+          <tr class="row" onclick="openRef('${r.id}')">
+            <td>${r.id}</td><td>${esc(r.result)}</td><td>${esc(r.clinic)}</td><td>${esc(r.status)}</td>
+          </tr>`).join("")}
+        </tbody></table>` : `<div class="empty">No data available. A referral will appear here once your care team creates one.</div>`}
+    </div>
+    <div id="detail"></div>
+    <p class="notice">Clinical text is clinician-approved. This app does not diagnose or recommend treatment.</p>`;
+  if (state.selectedId) renderDetail(state.selectedId);
+}
+
+// ---------- Start ----------
+render();
+</script>
+</body>
+</html>
